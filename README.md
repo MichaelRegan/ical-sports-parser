@@ -17,7 +17,8 @@ Rust CLI that converts an iCalendar feed into OpenClaw-friendly JSON for schedul
 - Expands recurring events from `RRULE`, `RDATE`, and `EXDATE` data when present
 - Normalizes start and end values to ISO 8601
 - Carries forward timezone information when available
-- Filters out already-finished events, including cancelled events that have already ended
+- Filters out events that have already ended while keeping in-progress events visible
+- Can optionally include recent past events with `--past-days`
 - Keeps upcoming cancelled events so downstream tools can detect schedule changes
 - Filters to an upcoming lookahead window and a maximum result count
 - Sorts remaining events by upcoming start time
@@ -38,6 +39,7 @@ The command prints compact JSON to stdout with this structure:
   },
   "generated_at": "2026-04-12T20:15:00Z",
   "applied_filter": {
+    "past_days": 0,
     "lookahead_days": 30,
     "limit": 10
   },
@@ -72,6 +74,7 @@ Examples below assume the binary is available on your `PATH` as `ical-sports-par
 ical-sports-parser ./team-calendar.ics
 ical-sports-parser 'webcal://api.team-manager.gc.com/...'
 ical-sports-parser --days 45 --limit 6 'webcal://api.team-manager.gc.com/...'
+ical-sports-parser --days 0 --past-days 7 './team-calendar.ics'
 ical-sports-parser --display-timezone America/Los_Angeles --pretty './team-calendar.ics'
 ./scripts/openclaw-ical-sports-parser.sh 'webcal://api.team-manager.gc.com/...'
 ```
@@ -79,7 +82,10 @@ ical-sports-parser --display-timezone America/Los_Angeles --pretty './team-calen
 ## Filters
 
 - `--days N` limits results to the next `N` days. Default: `30`
+- `--past-days N` also includes events that started within the last `N` days. Default: `0`
 - `--limit N` returns at most `N` upcoming events. Default: `10`
+
+Use `--days 0 --past-days N` to return only recent past events.
 
 ## Presentation
 

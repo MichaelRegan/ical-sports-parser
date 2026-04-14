@@ -41,6 +41,7 @@ struct SortableEvent {
 struct CliOptions {
     source: String,
     days: i64,
+    past_days: i64,
     limit: usize,
     display_timezone: Option<Tz>,
     pretty: bool,
@@ -76,6 +77,7 @@ struct CalendarOutput {
 
 #[derive(Debug, Serialize)]
 struct AppliedFilter {
+    past_days: i64,
     lookahead_days: i64,
     limit: usize,
 }
@@ -145,6 +147,7 @@ fn serialize_output(output: &CalendarOutput, pretty: bool) -> Result<String, ser
 fn parse_cli_options(args: impl Iterator<Item = String>) -> Result<CliOptions, String> {
     let mut source = None;
     let mut days = 30_i64;
+    let mut past_days = 0_i64;
     let mut limit = 10_usize;
     let mut display_timezone = None;
     let mut pretty = false;
@@ -159,8 +162,19 @@ fn parse_cli_options(args: impl Iterator<Item = String>) -> Result<CliOptions, S
                 days = value
                     .parse::<i64>()
                     .map_err(|_| format!("Invalid --days value: {value}"))?;
-                if days <= 0 {
-                    return Err("--days must be greater than 0".to_owned());
+                if days < 0 {
+                    return Err("--days must be greater than or equal to 0".to_owned());
+                }
+            }
+            "--past-days" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "Missing value for --past-days".to_owned())?;
+                past_days = value
+                    .parse::<i64>()
+                    .map_err(|_| format!("Invalid --past-days value: {value}"))?;
+                if past_days < 0 {
+                    return Err("--past-days must be greater than or equal to 0".to_owned());
                 }
             }
             "--limit" => {
@@ -188,7 +202,7 @@ fn parse_cli_options(args: impl Iterator<Item = String>) -> Result<CliOptions, S
             }
             _ if arg.starts_with('-') => {
                 return Err(format!(
-                    "Unknown option: {arg}\nUsage: ical-sports-parser [--days N] [--limit N] [--display-timezone TZ] [--pretty] <path-to-file.ics|webcal-url|https-url>"
+                    "Unknown option: {arg}\nUsage: ical-sports-parser [--days N] [--past-days N] [--limit N] [--display-timezone TZ] [--pretty] <path-to-file.ics|webcal-url|https-url>"
                 ));
             }
             _ => {
@@ -203,13 +217,14 @@ fn parse_cli_options(args: impl Iterator<Item = String>) -> Result<CliOptions, S
     }
 
     let source = source.ok_or_else(|| {
-        "Usage: ical-sports-parser [--days N] [--limit N] [--display-timezone TZ] [--pretty] <path-to-file.ics|webcal-url|https-url>"
+        "Usage: ical-sports-parser [--days N] [--past-days N] [--limit N] [--display-timezone TZ] [--pretty] <path-to-file.ics|webcal-url|https-url>"
             .to_owned()
     })?;
 
     Ok(CliOptions {
         source,
         days,
+        past_days,
         limit,
         display_timezone,
         pretty,
@@ -282,11 +297,21 @@ fn build_calendar_output(
     options: &CliOptions,
 ) -> CalendarOutput {
     let calendar_timezone = calendar.get_timezone().map(str::to_owned);
+    let window_start = now_utc - ChronoDuration::days(options.past_days);
     let window_end = now_utc + ChronoDuration::days(options.days);
 
     let mut events = calendar
         .events()
-        .flat_map(|event| expand_event(event, calendar_timezone.as_deref(), now_utc, window_end, options))
+        .flat_map(|event| {
+            expand_event(
+                event,
+                calendar_timezone.as_deref(),
+                window_start,
+                now_utc,
+                window_end,
+                options,
+            )
+        })
         .collect::<Vec<_>>();
 
     events.sort_by_key(|event| event.sort_start);
@@ -300,6 +325,7 @@ fn build_calendar_output(
         },
         generated_at: now_utc.to_rfc3339(),
         applied_filter: AppliedFilter {
+            past_days: options.past_days,
             lookahead_days: options.days,
             limit: options.limit,
         },
@@ -315,6 +341,7 @@ fn build_calendar_output(
 fn expand_event(
     event: &icalendar::Event,
     calendar_timezone: Option<&str>,
+    window_start: DateTime<Utc>,
     now_utc: DateTime<Utc>,
     window_end: DateTime<Utc>,
     options: &CliOptions,
@@ -361,13 +388,20 @@ fn expand_event(
     };
 
     if has_recurrence_rules(event) {
-        let occurrences = expand_recurrences(event, &template, now_utc, window_end, options);
+        let occurrences = expand_recurrences(
+            event,
+            &template,
+            window_start,
+            now_utc,
+            window_end,
+            options,
+        );
         if !occurrences.is_empty() {
             return occurrences;
         }
     }
 
-    build_single_event(start, &template, now_utc, window_end, options)
+    build_single_event(start, &template, window_start, now_utc, window_end, options)
         .into_iter()
         .collect()
 }
@@ -381,11 +415,12 @@ fn has_recurrence_rules(event: &icalendar::Event) -> bool {
 fn expand_recurrences(
     event: &icalendar::Event,
     template: &EventTemplate,
+    window_start: DateTime<Utc>,
     now_utc: DateTime<Utc>,
     window_end: DateTime<Utc>,
     options: &CliOptions,
 ) -> Vec<SortableEvent> {
-    let recurrence_budget = recurrence_budget(options.limit, now_utc, window_end);
+    let recurrence_budget = recurrence_budget(options.limit, window_start, window_end);
     let Ok(rrules) = event.get_recurrence() else {
         return Vec::new();
     };
@@ -396,7 +431,17 @@ fn expand_recurrences(
         .into_iter()
         .filter_map(|occurrence| {
             let sort_start = occurrence.with_timezone(&Utc);
-            if sort_start < now_utc || sort_start > window_end {
+            let sort_end = template
+                .end_offset
+                .map_or(sort_start, |offset| sort_start + offset);
+            if !is_event_in_window(
+                sort_start,
+                sort_end,
+                window_start,
+                now_utc,
+                window_end,
+                options.past_days,
+            ) {
                 return None;
             }
 
@@ -438,23 +483,50 @@ fn expand_recurrences(
         .collect()
 }
 
-fn recurrence_budget(limit: usize, now_utc: DateTime<Utc>, window_end: DateTime<Utc>) -> u16 {
-    let day_span = (window_end - now_utc).num_days().max(1) as usize;
+fn recurrence_budget(limit: usize, window_start: DateTime<Utc>, window_end: DateTime<Utc>) -> u16 {
+    let day_span = (window_end - window_start).num_days().max(1) as usize;
     let budget = day_span.saturating_mul(4).max(limit.saturating_mul(8)).max(64);
     budget.min(u16::MAX as usize) as u16
+}
+
+fn is_event_in_window(
+    sort_start: DateTime<Utc>,
+    sort_end: DateTime<Utc>,
+    window_start: DateTime<Utc>,
+    now_utc: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    past_days: i64,
+) -> bool {
+    if sort_start > window_end {
+        return false;
+    }
+
+    if past_days > 0 {
+        return sort_end >= window_start;
+    }
+
+    sort_end > now_utc
 }
 
 fn build_single_event(
     start: ParsedDateTimeValue,
     template: &EventTemplate,
+    window_start: DateTime<Utc>,
     now_utc: DateTime<Utc>,
     window_end: DateTime<Utc>,
     options: &CliOptions,
 ) -> Option<SortableEvent> {
-    let compare_utc = template
+    let sort_end = template
         .end_offset
         .map_or(start.sort_utc, |offset| start.sort_utc + offset);
-    if compare_utc < now_utc || start.sort_utc > window_end {
+    if !is_event_in_window(
+        start.sort_utc,
+        sort_end,
+        window_start,
+        now_utc,
+        window_end,
+        options.past_days,
+    ) {
         return None;
     }
 
@@ -687,10 +759,11 @@ mod tests {
     const SAMPLE_RECURRING_CALENDAR: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nX-WR-CALNAME:Julie Softball\r\nX-WR-TIMEZONE:America/Los_Angeles\r\nBEGIN:VEVENT\r\nUID:recurring-game\r\nSUMMARY:Julie Softball vs Wildcats\r\nDESCRIPTION:League game against Wildcats\r\nLOCATION:Central Park Field 3\r\nDTSTART;TZID=America/Los_Angeles:20990405T183000\r\nDTEND;TZID=America/Los_Angeles:20990405T200000\r\nRRULE:FREQ=WEEKLY;COUNT=4\r\nSTATUS:CONFIRMED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
     const SAMPLE_UTC_CALENDAR: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:utc-game\r\nSUMMARY:Woodinville Falcons Varsity vs Redmond Varsity Mustangs\r\nDTSTART:20990414T020000Z\r\nDTEND:20990414T040000Z\r\nSTATUS:CONFIRMED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
 
-    fn test_options(limit: usize, days: i64) -> CliOptions {
+    fn test_options(limit: usize, days: i64, past_days: i64) -> CliOptions {
         CliOptions {
             source: "sample.ics".to_owned(),
             days,
+            past_days,
             limit,
             display_timezone: None,
             pretty: false,
@@ -721,7 +794,7 @@ mod tests {
             .single()
             .expect("valid test datetime");
 
-        let output = build_calendar_output(&calendar, &source, now, &test_options(10, 30));
+    let output = build_calendar_output(&calendar, &source, now, &test_options(10, 30, 0));
 
         assert_eq!(output.calendar_name.as_deref(), Some("Julie Softball"));
         assert_eq!(output.events.len(), 2);
@@ -754,10 +827,57 @@ mod tests {
             .single()
             .expect("valid test datetime");
 
-        let output = build_calendar_output(&calendar, &source, now, &test_options(10, 30));
+    let output = build_calendar_output(&calendar, &source, now, &test_options(10, 30, 0));
 
         assert_eq!(output.events.len(), 1);
         assert!(output.events.iter().all(|event| event.uid != "event-2"));
+    }
+
+    #[test]
+    fn keeps_events_that_are_currently_in_progress() {
+        let calendar = SAMPLE_CALENDAR
+            .parse::<Calendar>()
+            .expect("sample calendar should parse");
+        let source = LoadedSource {
+            requested: "sample.ics".to_owned(),
+            resolved: "sample.ics".to_owned(),
+            kind: "file".to_owned(),
+            contents: SAMPLE_CALENDAR.to_owned(),
+        };
+        let now = Utc
+            .with_ymd_and_hms(2099, 4, 13, 2, 30, 0)
+            .single()
+            .expect("valid test datetime");
+
+        let output = build_calendar_output(&calendar, &source, now, &test_options(10, 30, 0));
+
+        assert_eq!(output.events.len(), 1);
+        assert_eq!(output.events[0].uid, "event-1");
+    }
+
+    #[test]
+    fn includes_past_events_when_past_days_is_set() {
+        let calendar = SAMPLE_CALENDAR
+            .parse::<Calendar>()
+            .expect("sample calendar should parse");
+        let source = LoadedSource {
+            requested: "sample.ics".to_owned(),
+            resolved: "sample.ics".to_owned(),
+            kind: "file".to_owned(),
+            contents: SAMPLE_CALENDAR.to_owned(),
+        };
+        let now = Utc
+            .with_ymd_and_hms(2099, 4, 13, 2, 30, 0)
+            .single()
+            .expect("valid test datetime");
+
+        let output = build_calendar_output(&calendar, &source, now, &test_options(10, 0, 3));
+
+        assert_eq!(output.events.len(), 2);
+        assert_eq!(output.events[0].uid, "event-2");
+        assert_eq!(output.events[1].uid, "event-1");
+        assert_eq!(output.applied_filter.past_days, 3);
+        assert_eq!(output.applied_filter.lookahead_days, 0);
     }
 
     #[test]
@@ -776,7 +896,7 @@ mod tests {
             .single()
             .expect("valid test datetime");
 
-        let output = build_calendar_output(&calendar, &source, now, &test_options(10, 60));
+        let output = build_calendar_output(&calendar, &source, now, &test_options(10, 60, 0));
 
         assert_eq!(output.events.len(), 4);
         assert!(output.events.iter().all(|event| event.recurrence_parent_uid.as_deref() == Some("recurring-game")));
@@ -800,7 +920,7 @@ mod tests {
             .single()
             .expect("valid test datetime");
 
-        let output = build_calendar_output(&calendar, &source, now, &test_options(2, 60));
+        let output = build_calendar_output(&calendar, &source, now, &test_options(2, 60, 0));
 
         assert_eq!(output.events.len(), 2);
         assert_eq!(output.applied_filter.limit, 2);
@@ -822,7 +942,7 @@ mod tests {
             .with_ymd_and_hms(2099, 4, 1, 0, 0, 0)
             .single()
             .expect("valid test datetime");
-        let mut options = test_options(10, 30);
+        let mut options = test_options(10, 30, 0);
         options.display_timezone = Some(chrono_tz::America::Los_Angeles);
 
         let output = build_calendar_output(&calendar, &source, now, &options);
@@ -839,11 +959,13 @@ mod tests {
     }
 
     #[test]
-    fn parses_cli_options_with_days_limit_timezone_and_pretty() {
+    fn parses_cli_options_with_days_limit_past_days_timezone_and_pretty() {
         let options = parse_cli_options(
             [
                 "--days",
                 "45",
+                "--past-days",
+                "7",
                 "--limit",
                 "6",
                 "--display-timezone",
@@ -857,6 +979,7 @@ mod tests {
         .expect("cli options should parse");
 
         assert_eq!(options.days, 45);
+    assert_eq!(options.past_days, 7);
         assert_eq!(options.limit, 6);
         assert_eq!(options.display_timezone, Some(chrono_tz::America::Los_Angeles));
         assert!(options.pretty);
@@ -873,6 +996,7 @@ mod tests {
             },
             generated_at: "2099-04-01T00:00:00Z".to_owned(),
             applied_filter: AppliedFilter {
+                past_days: 0,
                 lookahead_days: 30,
                 limit: 10,
             },

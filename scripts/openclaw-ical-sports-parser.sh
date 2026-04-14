@@ -48,6 +48,7 @@ if [[ -z "$source_arg" ]]; then
 fi
 
 days_arg="${OPENCLAW_ICAL_DAYS:-90}"
+past_days_arg="${OPENCLAW_ICAL_PAST_DAYS:-0}"
 limit_arg="${OPENCLAW_ICAL_LIMIT:-12}"
 timezone_arg="${OPENCLAW_ICAL_TIMEZONE:-America/Los_Angeles}"
 pretty_arg="${OPENCLAW_ICAL_PRETTY:-false}"
@@ -55,9 +56,9 @@ pretty_arg="${OPENCLAW_ICAL_PRETTY:-false}"
 parser_command="$(resolve_parser_command)"
 
 if [[ "$parser_command" == "__CARGO_RUN__" ]]; then
-  command=(cargo run --quiet -- --days "$days_arg" --limit "$limit_arg")
+  command=(cargo run --quiet -- --days "$days_arg" --past-days "$past_days_arg" --limit "$limit_arg")
 else
-  command=("$parser_command" --days "$days_arg" --limit "$limit_arg")
+  command=("$parser_command" --days "$days_arg" --past-days "$past_days_arg" --limit "$limit_arg")
 fi
 
 if [[ -n "$timezone_arg" ]]; then
