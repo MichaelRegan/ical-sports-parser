@@ -66,11 +66,13 @@ The command prints compact JSON to stdout with this structure:
 
 ## Usage
 
+Examples below assume the binary is available on your `PATH` as `ical-sports-parser`.
+
 ```bash
-cargo run -- ./team-calendar.ics
-cargo run -- 'webcal://api.team-manager.gc.com/...'
-cargo run -- --days 45 --limit 6 'webcal://api.team-manager.gc.com/...'
-cargo run -- --display-timezone America/Los_Angeles --pretty './team-calendar.ics'
+ical-sports-parser ./team-calendar.ics
+ical-sports-parser 'webcal://api.team-manager.gc.com/...'
+ical-sports-parser --days 45 --limit 6 'webcal://api.team-manager.gc.com/...'
+ical-sports-parser --display-timezone America/Los_Angeles --pretty './team-calendar.ics'
 ./scripts/openclaw-ical-sports-parser.sh 'webcal://api.team-manager.gc.com/...'
 ```
 
@@ -87,7 +89,7 @@ cargo run -- --display-timezone America/Los_Angeles --pretty './team-calendar.ic
 ## Common commands
 
 - `cargo build`
-- `cargo run -- <source>`
+- `ical-sports-parser <source>`
 - `cargo test`
 - `cargo clippy --all-targets --all-features -- -D warnings`
 
@@ -97,4 +99,4 @@ Open `ical-sports-parser.code-workspace` to use the bundled workspace settings, 
 
 ## OpenClaw
 
-See [OPENCLAW_INTEGRATION.md](/home/michael/projects/ical-sports-parser/OPENCLAW_INTEGRATION.md) for a practical wrapper command, environment variables, and a tool/prompt contract for schedule questions.
+See [OPENCLAW_INTEGRATION.md](OPENCLAW_INTEGRATION.md) for a practical wrapper command, environment variables, and a tool/prompt contract for schedule questions.
