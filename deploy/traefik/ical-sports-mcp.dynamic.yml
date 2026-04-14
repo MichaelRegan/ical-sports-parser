@@ -1,0 +1,16 @@
+http:
+  routers:
+    ical-sports-mcp:
+      rule: "Host(`claw.lan.mjsquared.net`) && (Path(`/mcp`) || Path(`/healthz`))"
+      entryPoints:
+        - websecure
+      service: ical-sports-mcp
+      priority: 100
+      tls: {}
+
+  services:
+    ical-sports-mcp:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://127.0.0.1:8080"
