@@ -320,9 +320,6 @@ fn expand_event(
     options: &CliOptions,
 ) -> Vec<SortableEvent> {
     let status = normalize_text(event.property_value("STATUS"));
-    if status.as_deref() == Some("CANCELLED") {
-        return Vec::new();
-    }
 
     let Some(start_property) = event.properties().get("DTSTART") else {
         return Vec::new();
@@ -541,21 +538,21 @@ fn resolve_localized_datetime(
     timezone_hint: Option<&str>,
     is_all_day: bool,
 ) -> Option<ParsedDateTimeValue> {
-    if let Some(timezone_name) = timezone_hint {
-        if let Some(timezone) = parse_timezone(timezone_name) {
-            let localized = match timezone.from_local_datetime(&naive) {
-                LocalResult::Single(value) => value,
-                LocalResult::Ambiguous(first, _) => first,
-                LocalResult::None => return None,
-            };
+    if let Some(timezone_name) = timezone_hint
+        && let Some(timezone) = parse_timezone(timezone_name)
+    {
+        let localized = match timezone.from_local_datetime(&naive) {
+            LocalResult::Single(value) => value,
+            LocalResult::Ambiguous(first, _) => first,
+            LocalResult::None => return None,
+        };
 
-            return Some(ParsedDateTimeValue {
-                iso: localized.to_rfc3339(),
-                sort_utc: localized.with_timezone(&Utc),
-                timezone: Some(timezone.name().to_owned()),
-                is_all_day,
-            });
-        }
+        return Some(ParsedDateTimeValue {
+            iso: localized.to_rfc3339(),
+            sort_utc: localized.with_timezone(&Utc),
+            timezone: Some(timezone.name().to_owned()),
+            is_all_day,
+        });
     }
 
     let localized = match Local.from_local_datetime(&naive) {
@@ -727,15 +724,40 @@ mod tests {
         let output = build_calendar_output(&calendar, &source, now, &test_options(10, 30));
 
         assert_eq!(output.calendar_name.as_deref(), Some("Julie Softball"));
-        assert_eq!(output.events.len(), 1);
+        assert_eq!(output.events.len(), 2);
 
-        let event = &output.events[0];
+        let cancelled_event = &output.events[0];
+        let event = &output.events[1];
+        assert_eq!(cancelled_event.uid, "event-2");
+        assert_eq!(cancelled_event.status.as_deref(), Some("CANCELLED"));
         assert_eq!(event.uid, "event-1");
         assert_eq!(event.title, "Julie Softball vs Wildcats");
         assert_eq!(event.opponent.as_deref(), Some("Wildcats"));
         assert_eq!(event.event_type, "game");
         assert_eq!(event.location.as_deref(), Some("Central Park Field 3"));
         assert_eq!(event.timezone.as_deref(), Some("America/Los_Angeles"));
+    }
+
+    #[test]
+    fn excludes_cancelled_events_that_have_already_finished() {
+        let calendar = SAMPLE_CALENDAR
+            .parse::<Calendar>()
+            .expect("sample calendar should parse");
+        let source = LoadedSource {
+            requested: "sample.ics".to_owned(),
+            resolved: "sample.ics".to_owned(),
+            kind: "file".to_owned(),
+            contents: SAMPLE_CALENDAR.to_owned(),
+        };
+        let now = Utc
+            .with_ymd_and_hms(2099, 4, 11, 2, 0, 0)
+            .single()
+            .expect("valid test datetime");
+
+        let output = build_calendar_output(&calendar, &source, now, &test_options(10, 30));
+
+        assert_eq!(output.events.len(), 1);
+        assert!(output.events.iter().all(|event| event.uid != "event-2"));
     }
 
     #[test]

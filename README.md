@@ -17,7 +17,8 @@ Rust CLI that converts an iCalendar feed into OpenClaw-friendly JSON for schedul
 - Expands recurring events from `RRULE`, `RDATE`, and `EXDATE` data when present
 - Normalizes start and end values to ISO 8601
 - Carries forward timezone information when available
-- Filters out cancelled and already-finished events
+- Filters out already-finished events, including cancelled events that have already ended
+- Keeps upcoming cancelled events so downstream tools can detect schedule changes
 - Filters to an upcoming lookahead window and a maximum result count
 - Sorts remaining events by upcoming start time
 - Adds light sports enrichment such as `event_type` and `opponent`
